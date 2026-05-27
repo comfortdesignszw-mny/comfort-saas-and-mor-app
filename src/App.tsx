@@ -17,32 +17,53 @@ import {
   LifeBuoy,
   ShoppingBag,
   Menu,
-  X
+  X,
+  Settings
 } from 'lucide-react';
 
 import VendorDashboard from './components/VendorDashboard';
 import StorefrontView from './components/StorefrontView';
 import CustomerPortal from './components/CustomerPortal';
 import ArchEngine from './components/ArchEngine';
+import SettingsView from './components/SettingsView';
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<'vendor' | 'storefront' | 'portal' | 'architecture'>('vendor');
+  const [activeTab, setActiveTab] = useState<'vendor' | 'storefront' | 'portal' | 'architecture' | 'settings'>('storefront');
   const [activeStoreSubdomain, setActiveStoreSubdomain] = useState('apex');
-  const [systemTime, setSystemTime] = useState('2026-05-26 14:48:15');
+  const [systemTime, setSystemTime] = useState(() => {
+    const now = new Date();
+    const formatZero = (num: number) => String(num).padStart(2, '0');
+    const tzString = now.toLocaleTimeString('en-US', { timeZoneName: 'short' }).split(' ').pop() || '';
+    return `${now.getFullYear()}-${formatZero(now.getMonth() + 1)}-${formatZero(now.getDate())} ${formatZero(now.getHours())}:${formatZero(now.getMinutes())}:${formatZero(now.getSeconds())} ${tzString}`;
+  });
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
   // Continually update a high contrast clock inside page frames
   useEffect(() => {
-    const timer = setInterval(() => {
+    const updateTime = () => {
       const now = new Date();
-      setSystemTime(now.getUTCFullYear() + '-' + 
-        String(now.getUTCMonth() + 1).padStart(2, '0') + '-' + 
-        String(now.getUTCDate()).padStart(2, '0') + ' ' + 
-        String(now.getUTCHours()).padStart(2, '0') + ':' + 
-        String(now.getUTCMinutes()).padStart(2, '0') + ':' + 
-        String(now.getUTCSeconds()).padStart(2, '0') + ' UTC'
-      );
-    }, 1000);
+      try {
+        // Format to user's local timezone (automatically detects browser location/settings)
+        const formatZero = (num: number) => String(num).padStart(2, '0');
+        
+        const year = now.getFullYear();
+        const month = formatZero(now.getMonth() + 1);
+        const date = formatZero(now.getDate());
+        const hours = formatZero(now.getHours());
+        const minutes = formatZero(now.getMinutes());
+        const seconds = formatZero(now.getSeconds());
+        
+        // Get timezone abbreviation, e.g. "GMT+2" or "CAT" or "CEST"
+        const tzString = now.toLocaleTimeString('en-US', { timeZoneName: 'short' }).split(' ').pop() || '';
+        
+        setSystemTime(`${year}-${month}-${date} ${hours}:${minutes}:${seconds} ${tzString}`);
+      } catch (e) {
+        setSystemTime(now.toLocaleString());
+      }
+    };
+
+    updateTime();
+    const timer = setInterval(updateTime, 1000);
     return () => clearInterval(timer);
   }, []);
 
@@ -173,6 +194,25 @@ export default function App() {
                     <p className={`text-[9px] font-semibold mt-0.5 ${activeTab === 'architecture' ? 'text-slate-800' : 'text-slate-500'}`}>Interactive blueprint map</p>
                   </div>
                 </button>
+
+                <button
+                  onClick={() => {
+                    setActiveTab('settings');
+                    setSidebarOpen(false);
+                  }}
+                  className={`w-full flex items-center gap-3 px-4 py-3.5 rounded-xl text-left text-xs font-sans font-bold transition-all ${
+                    activeTab === 'settings'
+                      ? 'bg-yellow-400 text-slate-950 shadow-xs font-black'
+                      : 'text-slate-400 hover:text-white hover:bg-slate-800/60 font-semibold'
+                  }`}
+                  id="sidebar-btn-settings"
+                >
+                  <Settings className="w-4 h-4 shrink-0" />
+                  <div className="flex-1">
+                    <p className="font-extrabold uppercase tracking-wide text-[11px]">System Settings</p>
+                    <p className={`text-[9px] font-semibold mt-0.5 ${activeTab === 'settings' ? 'text-slate-800' : 'text-slate-500'}`}>Profiles & business details</p>
+                  </div>
+                </button>
               </div>
             </div>
 
@@ -240,76 +280,6 @@ export default function App() {
       {/* Main Container Layout */}
       <main className="max-w-[1360px] mx-auto p-4 sm:p-8 space-y-8" id="core-workbench">
         
-        {/* Navigation Tabs - Switcher styled identically to high-fidelity dark sidebar values */}
-        <div className="flex flex-col xl:flex-row xl:items-center justify-between gap-4 border-b border-slate-200 pb-4">
-          <div className="flex flex-wrap items-center gap-2 bg-[#111827] p-2 rounded-2xl border border-slate-800 shadow-md max-w-fit">
-            
-            <button
-              onClick={() => setActiveTab('vendor')}
-              className={`flex items-center gap-2 px-5 py-3 text-xs font-sans font-bold rounded-xl transition-all duration-150 cursor-pointer ${
-                activeTab === 'vendor'
-                  ? 'bg-yellow-400 text-slate-900 shadow-sm'
-                  : 'text-slate-400 hover:text-white hover:bg-slate-800/60'
-              }`}
-              id="btn-nav-vendor"
-            >
-              <Building2 className="w-4 h-4" /> Vendor Console Engine
-            </button>
-
-            <button
-              onClick={() => setActiveTab('storefront')}
-              className={`flex items-center gap-2 px-5 py-3 text-xs font-sans font-bold rounded-xl transition-all duration-150 cursor-pointer ${
-                activeTab === 'storefront'
-                  ? 'bg-yellow-400 text-slate-900 shadow-sm'
-                  : 'text-slate-400 hover:text-white hover:bg-slate-800/60'
-              }`}
-              id="btn-nav-storefront"
-            >
-              <MonitorPlay className="w-4 h-4" /> Interactive Customer Storefronts
-            </button>
-
-            <button
-              onClick={() => setActiveTab('portal')}
-              className={`flex items-center gap-2 px-5 py-3 text-xs font-sans font-bold rounded-xl transition-all duration-150 cursor-pointer ${
-                activeTab === 'portal'
-                  ? 'bg-yellow-400 text-slate-900 shadow-sm'
-                  : 'text-slate-400 hover:text-white hover:bg-slate-800/60'
-              }`}
-              id="btn-nav-portal"
-            >
-              <User className="w-4 h-4" /> Self-Serve Buyer Portal
-            </button>
-
-            <button
-              onClick={() => setActiveTab('architecture')}
-              className={`flex items-center gap-2 px-5 py-3 text-xs font-sans font-bold rounded-xl transition-all duration-150 cursor-pointer ${
-                activeTab === 'architecture'
-                  ? 'bg-yellow-400 text-slate-900 shadow-sm'
-                  : 'text-slate-400 hover:text-white hover:bg-slate-800/60'
-              }`}
-              id="btn-nav-architecture"
-            >
-              <Cpu className="w-4 h-4" /> Architectural Specifications
-            </button>
-
-          </div>
-
-          <div className="flex items-center gap-2.5 text-xs text-slate-500 font-sans font-medium" id="tab-descriptions">
-            {activeTab === 'vendor' && (
-              <span className="flex items-center gap-2 px-3 py-1.5 bg-slate-100 rounded-full text-slate-600"><Layers className="w-4 h-4 text-indigo-500" /> Provisioning stores, digital products and license schemas</span>
-            )}
-            {activeTab === 'storefront' && (
-              <span className="flex items-center gap-2 px-3 py-1.5 bg-slate-100 rounded-full text-slate-600"><Share2 className="w-4 h-4 text-emerald-500" /> Experiencing direct checkouts, USSD prompts and Pay What You Want</span>
-            )}
-            {activeTab === 'portal' && (
-              <span className="flex items-center gap-2 px-3 py-1.5 bg-slate-100 rounded-full text-slate-600"><User className="w-4 h-4 text-sky-500" /> Client retrieve keys, downloads, cancels ongoing SaaS subscriptions</span>
-            )}
-            {activeTab === 'architecture' && (
-              <span className="flex items-center gap-2 px-3 py-1.5 bg-slate-100 rounded-full text-slate-600"><Terminal className="w-4 h-4 text-amber-500" /> Viewing optimized transactional schema, API blueprint models & Service Workers</span>
-            )}
-          </div>
-        </div>
-
         {/* Dynamic Panel rendering */}
         <section className="animate-fade-in duration-300" id="workbench-panels">
           {activeTab === 'vendor' && (
@@ -320,23 +290,7 @@ export default function App() {
           )}
 
           {activeTab === 'storefront' && (
-            <div className="space-y-4 animate-fade-in">
-              <div className="bg-yellow-400/10 border border-yellow-400/20 rounded-2xl p-4 flex flex-col md:flex-row md:items-center justify-between gap-3 text-xs text-slate-905">
-                <div>
-                  <p className="font-sans font-bold">Tenant routing simulation active</p>
-                  <p className="text-slate-605 mt-0.5 font-medium">
-                    Previewing e-commerce page for subdomain: <b className="font-bold underline text-indigo-650">https://{activeStoreSubdomain}.comfortmor.com</b>
-                  </p>
-                </div>
-                <div className="flex items-center gap-2 font-mono shrink-0">
-                  <span className="bg-white text-[#111827] text-[10px] font-bold px-2.5 py-1 rounded-xl border border-slate-200">
-                    Host Header match verified
-                  </span>
-                </div>
-              </div>
-              
-              <StorefrontView subdomain={activeStoreSubdomain} />
-            </div>
+            <StorefrontView subdomain={activeStoreSubdomain} />
           )}
 
           {activeTab === 'portal' && (
@@ -345,6 +299,17 @@ export default function App() {
 
           {activeTab === 'architecture' && (
             <ArchEngine />
+          )}
+
+          {activeTab === 'settings' && (
+            <SettingsView 
+              onLogoutSuccess={() => {
+                setActiveTab('storefront');
+              }}
+              onStoreUpdated={(newSub) => {
+                setActiveStoreSubdomain(newSub);
+              }}
+            />
           )}
         </section>
 

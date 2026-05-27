@@ -26,6 +26,7 @@ export default function CustomerPortal() {
   const [hasSearched, setHasSearched] = useState(false);
   const [orders, setOrders] = useState<Order[]>([]);
   const [subscriptions, setSubscriptions] = useState<Subscription[]>([]);
+  const [simulatedEmails, setSimulatedEmails] = useState<any[]>([]);
   const [feedback, setFeedback] = useState<{ type: 'success' | 'error', text: string } | null>(null);
 
   const handleSearchBuyerRecords = async (e: React.FormEvent) => {
@@ -45,6 +46,11 @@ export default function CustomerPortal() {
       const subResp = await fetch(`/api/customer/subscriptions?email=${encodeURIComponent(email.trim())}`);
       const subData = await subResp.json();
       setSubscriptions(subData);
+
+      // 3. Fetch Simulated Emails
+      const emailResp = await fetch(`/api/debug/emails?email=${encodeURIComponent(email.trim())}`);
+      const emailData = await emailResp.json();
+      setSimulatedEmails(emailData);
     } catch (err) {
       setFeedback({ type: 'error', text: 'Error querying customer portal database records.' });
     } finally {
@@ -272,6 +278,41 @@ export default function CustomerPortal() {
               ))
             )}
           </div>
+
+          {/* Simulated Email Receipts Feed in Portal */}
+          {simulatedEmails.length > 0 && (
+            <div className="col-span-1 md:col-span-2 bg-[#111827] border border-slate-800 rounded-3xl p-6 space-y-4 shadow-lg text-slate-100 mt-4" id="portal-simulated-mailbox">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <span className="w-2.5 h-2.5 bg-[#fbbf24] rounded-full animate-pulse animate-duration-1000"></span>
+                  <span className="text-xs font-sans font-black uppercase text-[#fbbf24] tracking-wider">Simulated Sandbox Email Client For {email}</span>
+                </div>
+                <span className="text-[10px] uppercase font-mono bg-slate-800 text-slate-300 px-3 py-1 rounded-full font-bold">INTERCEPTED EMAILS</span>
+              </div>
+              <p className="text-xs text-slate-300 leading-relaxed font-sans max-w-2xl font-medium">
+                The Merchant of Record network automatically fires email receipts and download link fallback details. Since no physical SMTP is linked in this environment, you can audit the dispatched payloads right here:
+              </p>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                {simulatedEmails.map(mail => (
+                  <div key={mail.id} className="bg-slate-950 border border-slate-800 rounded-2xl overflow-hidden flex flex-col shadow-inner">
+                    <div className="p-3 bg-slate-900 border-b border-slate-800 flex flex-col gap-0.5">
+                      <div className="flex items-center justify-between text-[10px] font-mono text-slate-400">
+                        <span>To: {mail.to}</span>
+                        <span>{new Date(mail.createdAt).toLocaleTimeString()}</span>
+                      </div>
+                      <div className="text-[11px] font-sans font-black text-white mt-1">
+                        Subject: {mail.subject}
+                      </div>
+                    </div>
+                    <div className="p-4 bg-white text-slate-900 overflow-y-auto max-h-60 text-xs custom-scrollbar flex-1">
+                      <div dangerouslySetInnerHTML={{ __html: mail.bodyHtml }} />
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
 
         </div>
       )}

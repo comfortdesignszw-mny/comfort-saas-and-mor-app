@@ -43,6 +43,18 @@ export default function StorefrontView({ subdomain }: StorefrontViewProps) {
   const [checkoutResponse, setCheckoutResponse] = useState<any | null>(null);
   const [simulatingPaymentApprove, setSimulatingPaymentApprove] = useState(false);
   const [paymentApproved, setPaymentApproved] = useState<any | null>(null);
+  const [simulatedEmails, setSimulatedEmails] = useState<any[]>([]);
+
+  useEffect(() => {
+    if (paymentApproved && buyerEmail) {
+      fetch(`/api/debug/emails?email=${encodeURIComponent(buyerEmail)}`)
+        .then(res => res.json())
+        .then(data => setSimulatedEmails(data))
+        .catch(err => console.error('Simulated emails fetch error:', err));
+    } else {
+      setSimulatedEmails([]);
+    }
+  }, [paymentApproved, buyerEmail]);
 
   // New bank transfer fields
   const [bankTxCode, setBankTxCode] = useState('');
@@ -601,61 +613,65 @@ export default function StorefrontView({ subdomain }: StorefrontViewProps) {
                 </div>
 
                 {paymentApproved ? (
-                  // Purchase complete
-                  <div className="bg-emerald-50 border border-emerald-100 rounded-3xl p-6 space-y-4 text-emerald-900 text-xs font-sans" id="purchase-completed-report">
-                    <p className="font-sans font-black text-emerald-950 flex items-center gap-1.5 text-sm uppercase">
-                      <CheckCircle className="w-5 h-5 text-emerald-600 shrink-0" /> TRANSACTION FULLY CONFIRMED!
-                    </p>
-                    <p className="text-emerald-800 leading-relaxed font-medium">
-                      Your purchase of <b className="font-black text-slate-900">{selectedProduct.name}</b> was successfull. The core deliverable has been activated on the ledger:
-                    </p>
-                    
-                    {/* CASE 1: Subscription - Key is Deliverable */}
-                    {selectedProduct.type === 'subscription' && paymentApproved.licenseKeyCreated && (
-                      <div className="bg-emerald-950/5 border border-emerald-200 p-4 rounded-2xl space-y-2 mt-2">
-                        <span className="text-[10px] font-sans font-black text-emerald-800 uppercase tracking-wider block">🔑 SOFTWARE SUBSCRIPTION ACCESS KEY</span>
-                        <div className="flex items-center gap-2">
-                          <code className="bg-white px-3 py-2 rounded-xl text-slate-900 font-mono font-bold text-xs select-all flex-1 text-center border border-emerald-150 tracking-wider">
-                            {paymentApproved.licenseKeyCreated}
-                          </code>
+                  // Purchase complete - High-contrast deliverable focal point
+                  <div className="space-y-4 animate-fade-in" id="purchase-completed-report">
+                    <div className="bg-emerald-550 text-white rounded-3xl p-6 space-y-5 text-xs font-sans shadow-lg relative overflow-hidden" style={{ backgroundColor: '#059669' }}>
+                      <div className="flex items-center gap-2">
+                        <CheckCircle className="w-5 h-5 text-emerald-200 shrink-0" />
+                        <span className="font-sans font-black tracking-widest uppercase text-[11px] text-emerald-100">Deliverable Ready</span>
+                      </div>
+
+                      {/* CASE 1: Download / eBook deliverable button is the ultimate focal point */}
+                      {(selectedProduct.type === 'download' || selectedProduct.type === 'bundle') && paymentApproved.downloadToken ? (
+                        <div className="space-y-4" id="checkout-direct-download-area">
+                          <h4 className="text-base font-sans font-black text-white leading-tight">
+                            Your eBook / Asset files are processed. Start downloading your file below:
+                          </h4>
+                          
+                          <a
+                            href={`/api/download/${paymentApproved.downloadToken}`}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="w-full bg-[#111827] hover:bg-black text-yellow-405 text-sm font-sans font-black py-4 px-4 rounded-xl transition-all inline-flex items-center justify-center gap-2.5 shadow-md cursor-pointer select-none hover:scale-[1.02] active:scale-[0.98]"
+                            id="checkout-direct-download-action"
+                          >
+                            <Download className="w-5 h-5 text-yellow-400 animate-bounce" /> Click to Download {selectedProduct.name} (.zip/.pdf)
+                          </a>
+
+                          <div className="bg-emerald-800/60 p-4 rounded-2xl border border-emerald-700/30 text-[11px] text-emerald-50 leading-relaxed font-semibold">
+                            🤝 <b>Dispatched to Inbox:</b> Your official purchase receipt, order invoice, and alternative backup product download link have been sent to <b>{buyerEmail}</b>.
+                          </div>
                         </div>
-                        <p className="text-[10px] text-emerald-700 leading-normal font-medium">
-                          Use this access token to log into your SaaS control panel and configure your API routes.
-                        </p>
-                      </div>
-                    )}
+                      ) : null}
 
-                    {/* CASE 2: Download/eBook - Deliverable download button is shown */}
-                    {(selectedProduct.type === 'download' || selectedProduct.type === 'bundle') && paymentApproved.downloadToken && (
-                      <div className="space-y-3 mt-2">
-                        <span className="text-[10px] font-sans font-black text-emerald-800 uppercase tracking-wider block">📦 CORE DOWNLOAD DELIVERABLE</span>
-                        <a
-                          href={`/api/download/${paymentApproved.downloadToken}`}
-                          target="_blank"
-                          rel="noreferrer"
-                          className="w-full bg-emerald-700 hover:bg-emerald-800 text-white text-xs font-sans font-extrabold py-3.5 px-4 rounded-xl transition-all inline-flex items-center justify-center gap-2 shadow-xs cursor-pointer hover:shadow-md"
-                          id="checkout-direct-download-action"
+                      {/* CASE 2: Subscription - License Activation is the ultimate focal point */}
+                      {selectedProduct.type === 'subscription' && paymentApproved.licenseKeyCreated ? (
+                        <div className="space-y-4" id="checkout-subscription-key-area">
+                          <h4 className="text-base font-sans font-black text-white leading-tight">
+                            Subscription Activated! Here is your secure SaaS login and integration key:
+                          </h4>
+
+                          <div className="bg-white border border-emerald-200 p-5 rounded-2xl space-y-1.5 shadow-inner">
+                            <span className="text-[9px] font-sans font-black text-emerald-800 uppercase tracking-widest block text-center">🔐 SECURE SUBSCRIPTION ACTIVATION KEY</span>
+                            <code className="bg-slate-100 p-3 rounded-xl text-slate-900 font-mono font-black text-sm select-all block text-center border border-slate-250 tracking-wider">
+                              {paymentApproved.licenseKeyCreated}
+                            </code>
+                          </div>
+
+                          <div className="bg-emerald-800/60 p-4 rounded-2xl border border-emerald-700/30 text-[11px] text-emerald-50 leading-relaxed font-semibold">
+                            🧾 <b>Dispatched to Inbox:</b> Your official payment receipt, SaaS subscription key, and VAT invoice details have been sent to <b>{buyerEmail}</b>.
+                          </div>
+                        </div>
+                      ) : null}
+
+                      <div className="text-center pt-3 border-t border-emerald-600/30">
+                        <button
+                          onClick={() => setSelectedProduct(null)}
+                          className="text-xs text-white hover:text-yellow-250 font-sans font-black underline cursor-pointer"
                         >
-                          <Download className="w-4 h-4 text-emerald-200 animate-pulse" /> Download Product Deliverable (.zip/.pdf/.dmg)
-                        </a>
+                          Return to Storefront catalog
+                        </button>
                       </div>
-                    )}
-
-                    {/* Show generic fallback info if key is enabled but not subscription */}
-                    {selectedProduct.type !== 'subscription' && paymentApproved.licenseKeyCreated && (
-                      <div className="bg-emerald-950/5 border border-emerald-200 p-4 rounded-xl font-mono text-center">
-                        <span className="text-[9px] text-emerald-800 block uppercase font-bold tracking-wider">Associated Licensing Code</span>
-                        <span className="font-bold select-all tracking-wide block text-emerald-900 text-xs mt-1">{paymentApproved.licenseKeyCreated}</span>
-                      </div>
-                    )}
-
-                    <div className="text-center pt-3 border-t border-emerald-155">
-                      <button
-                        onClick={() => setSelectedProduct(null)}
-                        className="text-xs text-emerald-800 hover:text-emerald-950 font-sans font-bold underline cursor-pointer"
-                      >
-                        Return to Storefront catalog
-                      </button>
                     </div>
                   </div>
                 ) : (

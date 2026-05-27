@@ -5,6 +5,14 @@
 
 import React, { useState, useEffect } from 'react';
 import { 
+  GoogleAuthProvider, 
+  signInWithPopup, 
+  RecaptchaVerifier, 
+  signInWithPhoneNumber,
+  ConfirmationResult
+} from 'firebase/auth';
+import { auth } from '../firebase';
+import { 
   Building2, 
   TrendingUp, 
   DollarSign, 
@@ -30,7 +38,13 @@ import {
   Send,
   Code,
   Loader2,
-  User
+  User,
+  Smartphone,
+  ShieldCheck,
+  Key,
+  Sliders,
+  UserCheck,
+  CreditCard
 } from 'lucide-react';
 import { Store, Product, Order, Subscription, LicenseKey, WebhookEndpoint, WebhookDelivery } from '../types';
 
@@ -47,6 +61,24 @@ export default function VendorDashboard({ onSelectStore, activeStoreSubdomain }:
   const [merchantName, setMerchantName] = useState<string>(() => {
     return localStorage.getItem('comfortmor_vendor_name') || '';
   });
+  const [sessionToken, setSessionToken] = useState<string>(() => {
+    return localStorage.getItem('comfortmor_vendor_token') || '';
+  });
+  const [userRole, setUserRole] = useState<'vendor' | 'admin'>(() => {
+    return (localStorage.getItem('comfortmor_vendor_role') as any) || 'vendor';
+  });
+  const [phoneSession, setPhoneSession] = useState<string>(() => {
+    return localStorage.getItem('comfortmor_vendor_phone') || '';
+  });
+
+  // Admin Dashboard views and metadata elements
+  const [adminActiveTab, setAdminActiveTab] = useState<'vendors' | 'subscriptions' | 'purchases' | 'settings'>('vendors');
+  const [allVendors, setAllVendors] = useState<any[]>([]);
+  const [allSubscriptions, setAllSubscriptions] = useState<any[]>([]);
+  const [allOrders, setAllOrders] = useState<any[]>([]);
+  const [commissionFee, setCommissionFee] = useState<number>(3.5); 
+  const [systemMaintenance, setSystemMaintenance] = useState<boolean>(false);
+  const [isViewingAdminDashboard, setIsViewingAdminDashboard] = useState<boolean>(false);
 
   // Database store states synced with Backend
   const [stores, setStores] = useState<Store[]>([]);
@@ -132,6 +164,26 @@ export default function VendorDashboard({ onSelectStore, activeStoreSubdomain }:
   const [validatingKey, setValidatingKey] = useState('');
   const [validatingEmail, setValidatingEmail] = useState('');
   const [validationResult, setValidationResult] = useState<{ success: boolean; text: string } | null>(null);
+
+  // Simultaneous Auth Selector States
+  const [authMethod, setAuthMethod] = useState<'google' | 'phone'>('google');
+  const [authIsRegister, setAuthIsRegister] = useState(false);
+  const [loginPhone, setLoginPhone] = useState('');
+  const [loginPin, setLoginPin] = useState('');
+  const [signupName, setSignupName] = useState('');
+  const [signupEmail, setSignupEmail] = useState('');
+  const [signupPhone, setSignupPhone] = useState('');
+  const [signupPin, setSignupPin] = useState('');
+  const [signupRole, setSignupRole] = useState<'vendor' | 'admin'>('vendor');
+  const [showGoogleModal, setShowGoogleModal] = useState(false);
+  const [authError, setAuthError] = useState<string | null>(null);
+  const [authSuccess, setAuthSuccess] = useState<string | null>(null);
+  const [phoneConfirmation, setPhoneConfirmation] = useState<ConfirmationResult | null>(null);
+  const [verificationCode, setVerificationCode] = useState('');
+  const [requestingOtp, setRequestingOtp] = useState(false);
+  const [otpSent, setOtpSent] = useState(false);
+  const [otpPhone, setOtpPhone] = useState('');
+  const [otpBusinessName, setOtpBusinessName] = useState('');
 
   // Webhook Management & Deliveries States
   const [webhooks, setWebhooks] = useState<WebhookEndpoint[]>([]);
@@ -245,14 +297,37 @@ export default function VendorDashboard({ onSelectStore, activeStoreSubdomain }:
     localStorage.setItem(`comfortmor_products_${email}`, JSON.stringify(updatedProducts));
   };
 
+  const fetchAdminData = async () => {
+    try {
+      const headers = { 'Authorization': `Bearer ${sessionToken}` };
+      const vRes = await fetch('/api/admin/vendors', { headers });
+      if (vRes.ok) {
+        setAllVendors(await vRes.json());
+      }
+      const sRes = await fetch('/api/admin/subscriptions', { headers });
+      if (sRes.ok) {
+        setAllSubscriptions(await sRes.json());
+      }
+      const oRes = await fetch('/api/admin/orders', { headers });
+      if (oRes.ok) {
+        setAllOrders(await oRes.json());
+      }
+    } catch (err) {
+      console.error('Failed to fetch admin dashboard payload', err);
+    }
+  };
+
   // Load all initial content
   useEffect(() => {
     if (merchantEmail) {
       fetchGlobalData(merchantEmail);
+      if (userRole === 'admin') {
+        fetchAdminData();
+      }
     } else {
       setLoading(false);
     }
-  }, [merchantEmail]);
+  }, [merchantEmail, userRole]);
 
   const fetchGlobalData = async (activeEmail?: string) => {
     const emailToUse = activeEmail || merchantEmail;
@@ -261,26 +336,41 @@ export default function VendorDashboard({ onSelectStore, activeStoreSubdomain }:
       return;
     }
 
+    // --- PWA & OFFLINE COUPLING: RENDER LOCAL STORAGE CACHE FIRST ---
+    const cachedStoresStr = localStorage.getItem(`comfortmor_stores_${emailToUse}`);
+    const cachedStores: Store[] = cachedStoresStr ? JSON.parse(cachedStoresStr) : [];
+    if (cachedStores.length > 0) {
+      setStores(cachedStores);
+      const current = cachedStores.find(s => s.subdomain === activeStoreSubdomain) || cachedStores[0];
+      if (current) {
+        setActiveStore(current);
+        onSelectStore(current.subdomain);
+        
+        // Fast render products from local storage immediately as well
+        const cachedProductsStr = localStorage.getItem(`comfortmor_products_${emailToUse}`);
+        const cachedProducts: Product[] = cachedProductsStr ? JSON.parse(cachedProductsStr) : [];
+        const storeCachedProds = cachedProducts.filter(p => p.storeId === current.id);
+        if (storeCachedProds.length > 0) {
+          setProducts(storeCachedProds);
+        }
+      }
+    }
+
     setLoading(true);
     try {
-      // First, sync any local stores / products of this email with the backend container
+      // Background sync: send offline creations to server db
       await syncLocalStoresAndProductsToBackend(emailToUse);
 
-      // 1. Load Stores list from server
+      // 1. Fetch updated Stores list from server
       const storeRes = await fetch('/api/stores');
       const storesList: Store[] = await storeRes.json();
       
-      // Filter list: only those belonging to the identified email!
       const userStores = storesList.filter(s => s.vendorEmail?.trim().toLowerCase() === emailToUse.trim().toLowerCase());
 
-      // If we have some local stores, ensure they reside in list
-      const storedStoresStr = localStorage.getItem(`comfortmor_stores_${emailToUse}`);
-      const localStores: Store[] = storedStoresStr ? JSON.parse(storedStoresStr) : [];
-      
-      // Merge unique local stores into userStores in state to guarantee local durability
+      // Merge unique local stores into userStores in state
       const mergedStoresMap = new Map<string, Store>();
       userStores.forEach(s => mergedStoresMap.set(s.id, s));
-      localStores.forEach(s => {
+      cachedStores.forEach(s => {
         if (!mergedStoresMap.has(s.id)) {
           mergedStoresMap.set(s.id, s);
         }
@@ -303,8 +393,8 @@ export default function VendorDashboard({ onSelectStore, activeStoreSubdomain }:
         setOrders([]);
       }
     } catch (err) {
-      console.error('Failed to sync vendor data securely:', err);
-      showFeedback('error', 'Network failure syncing backend. Working in offline sandbox.');
+      console.error('Failed to sync vendor data securely with container, operating in offline mode:', err);
+      showFeedback('error', 'Working in offline-first mode. Store updates will merge on reconnect.');
     } finally {
       setLoading(false);
     }
@@ -312,19 +402,23 @@ export default function VendorDashboard({ onSelectStore, activeStoreSubdomain }:
 
   const fetchStoreSpecificData = async (storeId: string, emailToUse?: string) => {
     const activeEmail = emailToUse || merchantEmail;
+    
+    // OFFLINE CACHE RENDERING FIRST
+    const cachedProductsStr = localStorage.getItem(`comfortmor_products_${activeEmail}`);
+    const cachedProducts: Product[] = cachedProductsStr ? JSON.parse(cachedProductsStr) : [];
+    const storeCachedProds = cachedProducts.filter(p => p.storeId === storeId);
+    if (storeCachedProds.length > 0) {
+      setProducts(storeCachedProds);
+    }
+
     try {
-      // Load products for selected store
+      // Fetch products for selected store
       const prodRes = await fetch(`/api/stores/${storeId}/products`);
       const prodList: Product[] = await prodRes.json();
 
-      // Retrieve local products cache to merge or restore
-      const storedProductsStr = localStorage.getItem(`comfortmor_products_${activeEmail}`);
-      const localProducts: Product[] = storedProductsStr ? JSON.parse(storedProductsStr) : [];
-      const storeLocalProds = localProducts.filter(p => p.storeId === storeId);
-
       const mergedProdsMap = new Map<string, Product>();
       prodList.forEach(p => mergedProdsMap.set(p.id, p));
-      storeLocalProds.forEach(p => {
+      storeCachedProds.forEach(p => {
         if (!mergedProdsMap.has(p.id)) {
           mergedProdsMap.set(p.id, p);
         }
@@ -333,10 +427,10 @@ export default function VendorDashboard({ onSelectStore, activeStoreSubdomain }:
       setProducts(finalProducts);
 
       // Save complete products list locally to keep cache updated
-      const otherUserProds = localProducts.filter(p => p.storeId !== storeId);
+      const otherUserProds = cachedProducts.filter(p => p.storeId !== storeId);
       saveProductsLocallyForEmail(activeEmail, [...otherUserProds, ...finalProducts]);
 
-      // Load live orders matching selected store from backend
+      // Fetch live orders
       const ordersRes = await fetch(`/api/stores/${storeId}/orders`);
       if (ordersRes.ok) {
         const orderList = await ordersRes.json();
@@ -345,11 +439,11 @@ export default function VendorDashboard({ onSelectStore, activeStoreSubdomain }:
         setOrders(orderList);
       }
       
-      // Load Webhooks and Deliveries
+      // Fetch telemetry
       await fetchWebhookData(storeId);
       
     } catch (err) {
-      console.error('Failed to load store-specific records offline:', err);
+      console.error('Failed to load store-specific records from active network connection:', err);
     }
   };
 
@@ -938,97 +1032,328 @@ export default function VendorDashboard({ onSelectStore, activeStoreSubdomain }:
 
   const metrics = calculateMetrics();
 
+  const handleRealGoogleLogin = async () => {
+    setAuthError(null);
+    setAuthSuccess(null);
+    try {
+      const provider = new GoogleAuthProvider();
+      provider.setCustomParameters({ prompt: 'select_account' });
+      
+      const userCredential = await signInWithPopup(auth, provider);
+      const user = userCredential.user;
+      
+      if (!user.email) {
+        throw new Error('Google Account did not provide an email address.');
+      }
+
+      const res = await fetch('/api/auth/google', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ 
+          email: user.email, 
+          name: user.displayName || 'Google Merchant' 
+        })
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        localStorage.setItem('comfortmor_vendor_email', data.user.email);
+        localStorage.setItem('comfortmor_vendor_name', data.user.name);
+        localStorage.setItem('comfortmor_vendor_token', data.token);
+        localStorage.setItem('comfortmor_vendor_role', data.user.role);
+        localStorage.setItem('comfortmor_vendor_phone', data.user.phone || '');
+        
+        setMerchantEmail(data.user.email);
+        setMerchantName(data.user.name);
+        setSessionToken(data.token);
+        setUserRole(data.user.role);
+        setPhoneSession(data.user.phone || '');
+        setAuthSuccess('Successfully authenticated via real Google Account!');
+        setAuthError(null);
+      } else {
+        setAuthError(data.error || 'Server rejected authenticated session.');
+      }
+    } catch (err: any) {
+      console.error('Real Google auth failed: ', err);
+      if (err.code === 'auth/popup-blocked') {
+        setAuthError('Sign-in popup was blocked by your browser. Please allow popups or open in a new tab.');
+      } else {
+        setAuthError(err.message || 'Real Google authentication failed.');
+      }
+    }
+  };
+
+  const handleSendOtp = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setAuthError(null);
+    setAuthSuccess(null);
+    if (!loginPhone.trim().startsWith('+')) {
+      setAuthError('Please enter phone number with country code (e.g., +263773334444).');
+      return;
+    }
+    setRequestingOtp(true);
+    try {
+      let verifier = (window as any).recaptchaVerifier;
+      if (!verifier) {
+        verifier = new RecaptchaVerifier(auth, 'recaptcha-container', {
+          size: 'invisible',
+          callback: (response: any) => {
+            // reCAPTCHA solved
+          }
+        });
+        (window as any).recaptchaVerifier = verifier;
+      }
+
+      const confirmation = await signInWithPhoneNumber(auth, loginPhone.trim(), verifier);
+      setPhoneConfirmation(confirmation);
+      setOtpPhone(loginPhone.trim());
+      setOtpSent(true);
+      setAuthSuccess(`Real Verification OTP code sent to ${loginPhone} via SMS!`);
+    } catch (err: any) {
+      console.error('Send phone verification SMS failed: ', err);
+      setAuthError(err.message || 'Failed to dispatch SMS. Ensure your format is strictly +[country_code][digits].');
+    } finally {
+      setRequestingOtp(false);
+    }
+  };
+
+  const handleVerifyOtp = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setAuthError(null);
+    setAuthSuccess(null);
+    if (!phoneConfirmation) {
+      setAuthError('No active phone verification session found.');
+      return;
+    }
+    if (verificationCode.trim().length !== 6) {
+      setAuthError('Verification code must be exactly 6 digits.');
+      return;
+    }
+    setRequestingOtp(true);
+    try {
+      const result = await phoneConfirmation.confirm(verificationCode.trim());
+      const user = result.user;
+      
+      const res = await fetch('/api/auth/phone', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ 
+          phone: user.phoneNumber, 
+          name: otpBusinessName.trim() || `Merchant ${user.phoneNumber}`,
+          email: `${user.uid}@comfortmor.app`
+        })
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        localStorage.setItem('comfortmor_vendor_email', data.user.email);
+        localStorage.setItem('comfortmor_vendor_name', data.user.name);
+        localStorage.setItem('comfortmor_vendor_token', data.token);
+        localStorage.setItem('comfortmor_vendor_role', data.user.role);
+        localStorage.setItem('comfortmor_vendor_phone', data.user.phone || '');
+        
+        setMerchantEmail(data.user.email);
+        setMerchantName(data.user.name);
+        setSessionToken(data.token);
+        setUserRole(data.user.role);
+        setPhoneSession(data.user.phone || '');
+        setAuthSuccess(`Authorized successfully via verified cellular code: ${user.phoneNumber}!`);
+        setAuthError(null);
+      } else {
+        setAuthError(data.error || 'Server rejected phone confirmation payload.');
+      }
+    } catch (err: any) {
+      console.error('OTP confirmation failed: ', err);
+      setAuthError(err.message || 'Incorrect or expired SMS verification code.');
+    } finally {
+      setRequestingOtp(false);
+    }
+  };
+
   if (!merchantEmail) {
     return (
       <div className="bg-white rounded-3xl border border-slate-200 p-8 max-w-lg mx-auto space-y-6 shadow-md mt-10" id="merchant-auth-gate">
         <div className="text-center space-y-2">
           <div className="w-12 h-12 bg-indigo-50 text-indigo-650 rounded-2xl flex items-center justify-center font-black text-xl mx-auto shadow-xs select-none">
-            <User className="w-6 h-6 text-indigo-600" />
+            <Lock className="w-6 h-6 text-indigo-600" />
           </div>
-          <h2 className="text-lg font-sans font-black text-slate-900 tracking-tight">ComfortMoR Vendor Identity</h2>
+          <h2 className="text-lg font-sans font-black text-slate-900 tracking-tight">ComfortMoR Gateway Client</h2>
           <p className="text-xs text-slate-500 leading-relaxed font-semibold">
-            Identify yourself to build, view, and manage your private multi-tenant storefronts safely without resource overlap.
+            Secure multi-tenant resource containment. Select OAuth provider or phone line index to register & run your private nodes.
           </p>
         </div>
 
-        <form onSubmit={(e) => {
-          e.preventDefault();
-          const emailInput = (document.getElementById('gate-email') as HTMLInputElement).value;
-          const nameInput = (document.getElementById('gate-name') as HTMLInputElement).value;
-          if (emailInput && nameInput) {
-            localStorage.setItem('comfortmor_vendor_email', emailInput.trim());
-            localStorage.setItem('comfortmor_vendor_name', nameInput.trim());
-            setMerchantEmail(emailInput.trim());
-            setMerchantName(nameInput.trim());
-          }
-        }} className="space-y-4">
-          <div>
-            <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1.5 font-sans">Full Name / Merchant business</label>
-            <input
-              type="text"
-              id="gate-name"
-              required
-              defaultValue="Comfort Designs"
-              placeholder="e.g. Comfort Designs"
-              className="w-full border border-slate-200 rounded-xl p-3 text-xs focus:ring-1 focus:ring-indigo-500 focus:outline-hidden font-sans font-semibold text-slate-800"
-            />
+        {/* Error / Success feedback */}
+        {authError && (
+          <div className="bg-rose-50 border border-rose-100 rounded-xl p-3 text-xs text-rose-700 font-sans font-semibold flex items-center gap-2">
+            <AlertCircle className="w-4 h-4 shrink-0 text-rose-500" />
+            <span>{authError}</span>
           </div>
-
-          <div>
-            <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1.5 font-sans">Your Operating Email Address</label>
-            <input
-              type="email"
-              id="gate-email"
-              required
-              defaultValue="comfort.designszw@gmail.com"
-              placeholder="e.g. comfort.designszw@gmail.com"
-              className="w-full border border-slate-200 rounded-xl p-3 text-xs focus:ring-1 focus:ring-indigo-500 focus:outline-hidden font-sans font-semibold text-slate-850 font-mono"
-            />
+        )}
+        {authSuccess && (
+          <div className="bg-emerald-50 border border-emerald-105 rounded-xl p-3 text-xs text-emerald-850 font-sans font-semibold flex items-center gap-2">
+            <Check className="w-4 h-4 shrink-0 text-emerald-500" />
+            <span>{authSuccess}</span>
           </div>
+        )}
 
+        {/* Tab switcher */}
+        <div className="flex bg-slate-100 p-1 rounded-xl">
           <button
-            type="submit"
-            className="w-full bg-[#111827] hover:bg-slate-800 text-yellow-405 font-sans font-extrabold text-xs py-3.5 rounded-xl transition-all flex items-center justify-center gap-1.5 cursor-pointer shadow-xs active:scale-[0.98]"
-            id="btn-gate-connect"
+            type="button"
+            onClick={() => {
+              setAuthMethod('google');
+              setAuthIsRegister(false);
+              setAuthError(null);
+            }}
+            className={`flex-1 py-2 text-center text-xs font-bold font-sans rounded-lg transition-all ${
+              authMethod === 'google' ? 'bg-white text-slate-950 shadow-xs' : 'text-slate-500 hover:text-slate-800'
+            }`}
           >
-            Connect Vendor Dashboard
+            Google Social Login
           </button>
-        </form>
-
-        <div className="border-t border-slate-100 pt-4 text-center">
-          <p className="text-[10px] text-slate-400 font-medium leading-relaxed">
-            Demo users can quickly connect as: <br />
-            <button 
-              type="button"
-              onClick={() => {
-                const email = 'billing@apexanalytics.com';
-                const name = 'Apex Analytics';
-                localStorage.setItem('comfortmor_vendor_email', email);
-                localStorage.setItem('comfortmor_vendor_name', name);
-                setMerchantEmail(email);
-                setMerchantName(name);
-              }}
-              className="text-indigo-600 hover:underline font-bold mr-2 text-[10px] cursor-pointer"
-            >
-              apexanalytics.com (Apex Analytics)
-            </button>
-            <span className="text-slate-300">•</span>
-            <button 
-              type="button"
-              onClick={() => {
-                const email = 'creatives@glowpixels.net';
-                const name = 'GlowPixels Assets';
-                localStorage.setItem('comfortmor_vendor_email', email);
-                localStorage.setItem('comfortmor_vendor_name', name);
-                setMerchantEmail(email);
-                setMerchantName(name);
-              }}
-              className="text-indigo-600 hover:underline font-bold ml-2 text-[10px] cursor-pointer"
-            >
-              glowpixels.net (GlowPixels Assets)
-            </button>
-          </p>
+          <button
+            type="button"
+            onClick={() => {
+              setAuthMethod('phone');
+              setAuthIsRegister(false);
+              setAuthError(null);
+            }}
+            className={`flex-1 py-2 text-center text-xs font-bold font-sans rounded-lg transition-all ${
+              authMethod === 'phone' ? 'bg-white text-slate-950 shadow-xs' : 'text-slate-500 hover:text-slate-800'
+            }`}
+          >
+            Phone & PIN Secure
+          </button>
         </div>
+
+        {/* GOOGLE SIGN IN */}
+        {authMethod === 'google' && (
+          <div className="space-y-4">
+            <div className="bg-slate-50 border border-slate-200 rounded-2xl p-6 text-center space-y-4">
+              <span className="text-[10px] text-slate-400 font-bold uppercase tracking-widest block font-sans">Official Identity Provider</span>
+              
+              <p className="text-xs text-slate-650 leading-relaxed max-w-sm mx-auto font-semibold">
+                Authenticate your sandbox or merchant containment terminal with Google accounts securely. No password required.
+              </p>
+
+              <button
+                type="button"
+                onClick={handleRealGoogleLogin}
+                className="w-full bg-white hover:bg-slate-55 text-slate-805 font-sans font-black text-xs py-3.5 px-4 border border-slate-200 rounded-xl flex items-center justify-center gap-2.5 shadow-2xs transition-all hover:border-slate-300 cursor-pointer select-none"
+              >
+                <Globe className="w-4 h-4 text-blue-500" /> Sign In securely with Google
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* PHONE & OTP SIGN IN */}
+        {authMethod === 'phone' && (
+          <div className="space-y-4">
+            {!otpSent ? (
+              <form onSubmit={handleSendOtp} className="space-y-4">
+                <div>
+                  <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1 font-sans">Merchant / Business Name (Optional for first-time login)</label>
+                  <input
+                    type="text"
+                    placeholder="e.g. Comfort Designs"
+                    value={otpBusinessName}
+                    onChange={(e) => setOtpBusinessName(e.target.value)}
+                    className="w-full border border-slate-200 rounded-xl px-3 py-3 text-xs font-sans font-bold text-slate-800 focus:ring-1 focus:ring-indigo-500 focus:outline-hidden"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1 font-sans">Corporate Phone Line (Country Code required)</label>
+                  <div className="relative">
+                    <Smartphone className="absolute left-3.5 top-3.5 w-4 h-4 text-slate-400" />
+                    <input
+                      type="text"
+                      placeholder="e.g. +263773334444"
+                      required
+                      value={loginPhone}
+                      onChange={(e) => setLoginPhone(e.target.value)}
+                      className="w-full border border-slate-200 rounded-xl pl-10 pr-3 py-3 text-xs font-sans font-bold text-slate-800 focus:ring-1 focus:ring-indigo-500 font-mono focus:outline-hidden"
+                    />
+                  </div>
+                </div>
+
+                <div className="text-[10px] text-slate-400 leading-normal font-sans text-center font-medium">
+                  💡 A real SMS verification code will be dispatched to your phone. Standard carrier SMS rates apply.
+                </div>
+
+                <button
+                  type="submit"
+                  disabled={requestingOtp}
+                  className="w-full bg-[#111827] hover:bg-slate-800 text-yellow-405 font-sans font-extrabold text-xs py-3.5 rounded-xl transition-all flex items-center justify-center gap-1.5 cursor-pointer shadow-xs disabled:opacity-50"
+                >
+                  {requestingOtp ? (
+                    <>
+                      <Loader2 className="w-4 h-4 text-yellow-405 animate-spin" /> Dispatching SMS...
+                    </>
+                  ) : (
+                    <>
+                      <Send className="w-4 h-4 text-yellow-405" /> Direct Dispatch Verification SMS
+                    </>
+                  )}
+                </button>
+              </form>
+            ) : (
+              <form onSubmit={handleVerifyOtp} className="space-y-4">
+                <div className="p-3 bg-indigo-50 border border-indigo-100 rounded-xl text-center text-xs text-indigo-850 font-semibold font-sans">
+                  📡 Verification OTP dispatched to <span className="font-mono">{otpPhone}</span>.
+                </div>
+
+                <div>
+                  <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1 font-sans">6-Digit SMS Verification PIN</label>
+                  <div className="relative">
+                    <Key className="absolute left-3.5 top-3.5 w-4 h-4 text-slate-400" />
+                    <input
+                      type="text"
+                      placeholder="e.g. 123456"
+                      maxLength={6}
+                      required
+                      value={verificationCode}
+                      onChange={(e) => setVerificationCode(e.target.value)}
+                      className="w-full border border-slate-200 rounded-xl pl-10 pr-3 py-3 text-xs font-sans font-bold text-slate-800 tracking-widest focus:ring-1 focus:ring-indigo-500 font-mono focus:outline-hidden"
+                    />
+                  </div>
+                </div>
+
+                <button
+                  type="submit"
+                  disabled={requestingOtp}
+                  className="w-full bg-emerald-700 hover:bg-emerald-800 text-white font-sans font-extrabold text-xs py-3.5 rounded-xl transition-all flex items-center justify-center gap-1.5 cursor-pointer shadow-xs disabled:opacity-50"
+                >
+                  {requestingOtp ? (
+                    <>
+                      <Loader2 className="w-4 h-4 text-white animate-spin" /> Verifying OTP...
+                    </>
+                  ) : (
+                    <>
+                      <ShieldCheck className="w-4 h-4 text-yellow-205" /> Confirm SMS Code & Launch Terminal
+                    </>
+                  )}
+                </button>
+
+                <div className="text-center">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setOtpSent(false);
+                      setVerificationCode('');
+                    }}
+                    className="text-xs text-indigo-650 hover:underline font-bold font-sans cursor-pointer"
+                  >
+                    ← Change Phone Number / Resend SMS
+                  </button>
+                </div>
+              </form>
+            )}
+          </div>
+        )}
+
+        {/* Firebase Invisible ReCAPTCHA Container */}
+        <div id="recaptcha-container" className="hidden"></div>
       </div>
     );
   }
@@ -1039,38 +1364,549 @@ export default function VendorDashboard({ onSelectStore, activeStoreSubdomain }:
       <div className="bg-[#111827] text-white p-5 rounded-3xl border border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-4 shadow-sm">
         <div className="flex items-center gap-3">
           <div className="w-10 h-10 bg-indigo-900 text-white border border-slate-800 rounded-2xl flex items-center justify-center shadow-xs">
-            <User className="w-5 h-5 text-yellow-400 animate-pulse" />
+            {userRole === 'admin' ? (
+              <ShieldCheck className="w-5 h-5 text-yellow-400 animate-pulse" />
+            ) : (
+              <User className="w-5 h-5 text-emerald-400" />
+            )}
           </div>
           <div>
-            <p className="text-[9px] font-mono tracking-widest text-slate-500 uppercase font-black font-sans leading-none">Authorized Merchant Session</p>
+            <div className="flex items-center gap-1.5">
+              <p className="text-[9px] font-mono tracking-widest text-slate-500 uppercase font-black font-sans leading-none">Authorized Merchant Session</p>
+              {userRole === 'admin' && (
+                <span className="text-[9px] bg-red-650 text-white border border-red-500 font-mono font-bold px-1.5 py-0.5 rounded leading-none">
+                  SYSTEM ADMIN
+                </span>
+              )}
+            </div>
             <h4 className="text-xs font-sans font-black text-slate-105 mt-1 select-all">
               {merchantName} <span className="text-slate-400 font-mono font-medium">({merchantEmail})</span>
             </h4>
           </div>
         </div>
-        <div className="flex items-center gap-2 text-xs">
-          <span className="font-mono bg-yellow-400 text-slate-950 font-black px-2.5 py-1 rounded text-[9px] uppercase tracking-wider select-none">
-            {stores.length} / 3 Stores
+        <div className="flex flex-wrap items-center gap-2 text-xs">
+          {userRole === 'admin' && (
+            <button
+              onClick={() => {
+                setIsViewingAdminDashboard(!isViewingAdminDashboard);
+                if (!isViewingAdminDashboard) {
+                  fetchAdminData();
+                }
+              }}
+              className={`font-sans font-extrabold px-3.5 py-1.5 rounded-xl border text-[10px] transition-all cursor-pointer ${
+                isViewingAdminDashboard 
+                  ? 'bg-yellow-400 text-slate-905 border-yellow-300 shadow-sm' 
+                  : 'bg-indigo-650 text-white border-indigo-500 hover:bg-indigo-700'
+              }`}
+            >
+              {isViewingAdminDashboard ? '◀ Go to Merchant Workspace' : '⚙️ Super Admin Control panel'}
+            </button>
+          )}
+
+          <span className="font-mono bg-slate-800 text-slate-300 font-bold px-2.5 py-1 rounded text-[9px] uppercase tracking-wider select-none">
+            {stores.length} Stores
           </span>
           <button
             onClick={() => {
               localStorage.removeItem('comfortmor_vendor_email');
               localStorage.removeItem('comfortmor_vendor_name');
+              localStorage.removeItem('comfortmor_vendor_token');
+              localStorage.removeItem('comfortmor_vendor_role');
+              localStorage.removeItem('comfortmor_vendor_phone');
+              
               setMerchantEmail('');
               setMerchantName('');
+              setSessionToken('');
+              setUserRole('vendor');
+              setPhoneSession('');
               setStores([]);
               setActiveStore(null);
+              setIsViewingAdminDashboard(false);
             }}
-            className="text-slate-300 hover:text-white bg-slate-800 hover:bg-slate-700 font-black px-3.5 py-1.5 rounded-xl border border-slate-700 transition-all cursor-pointer text-[10px] font-sans"
+            className="text-slate-300 hover:text-white bg-slate-850 hover:bg-slate-800 font-black px-3.5 py-1.5 rounded-xl border border-slate-700 transition-all cursor-pointer text-[10px] font-sans"
             id="btn-switch-merchant"
           >
-            Switch Account
+            Sign Out
           </button>
         </div>
       </div>
 
-      {/* Merchant Header Bar */}
-      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 bg-white p-6 rounded-3xl border border-slate-200 shadow-xs">
+      {isViewingAdminDashboard ? (
+        <div className="space-y-6 animate-fade-in" id="mor-super-admin-root">
+          {/* Admin Header Summary stats panel */}
+          <div className="bg-slate-900 border border-slate-800 text-white rounded-3xl p-6 shadow-md">
+            <div>
+              <span className="text-[10.5px] text-yellow-400 font-mono uppercase tracking-widest font-black">Unified Platform Control Tower</span>
+              <h2 className="text-xl font-sans font-black tracking-tight mt-1 text-slate-100">Merchant of Record Ecosystem Admin</h2>
+              <p className="text-xs text-slate-400 mt-1">
+                Verify multi-tenant containment isolation, manage dynamic customer subscription billing, adjust system platform parameters, and audit master transactions.
+              </p>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mt-6">
+              <div className="bg-slate-800 border border-slate-700/60 p-4 rounded-2xl">
+                <div className="text-slate-400 text-[10px] font-bold uppercase tracking-wider">Total Registered Tenants</div>
+                <div className="text-2xl font-black mt-1 text-slate-50">{allVendors.length} Tenants</div>
+                <div className="text-[10px] font-mono text-slate-500 mt-1.5 flex items-center gap-1">
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400"></span> Active sandbox nodes
+                </div>
+              </div>
+
+              <div className="bg-slate-800 border border-slate-700/60 p-4 rounded-2xl">
+                <div className="text-slate-400 text-[10px] font-bold uppercase tracking-wider">Unified Subscriptions</div>
+                <div className="text-2xl font-black mt-1 text-slate-50">{allSubscriptions.length} Plans</div>
+                <div className="text-[10px] font-mono text-slate-500 mt-1.5 flex items-center gap-1">
+                  <span className="w-1.5 h-1.5 rounded-full bg-blue-500"></span> Active monthly revenue (MRR)
+                </div>
+              </div>
+
+              <div className="bg-slate-800 border border-slate-700/60 p-4 rounded-2xl">
+                <div className="text-slate-400 text-[10px] font-bold uppercase tracking-wider">Consolidated Orders</div>
+                <div className="text-2xl font-black mt-1 text-slate-50">{allOrders.length} Completed</div>
+                <div className="text-[10px] font-mono text-slate-500 mt-1.5 flex items-center gap-1">
+                  <span className="w-1.5 h-1.5 rounded-full bg-indigo-400"></span> Zimpay / Paynow / Cards
+                </div>
+              </div>
+
+              <div className="bg-slate-800 border border-slate-700/60 p-4 rounded-2xl">
+                <div className="text-slate-400 text-[10px] font-bold uppercase tracking-wider">Global Comm. Fee</div>
+                <div className="text-2xl font-black mt-1 text-yellow-405">{commissionFee}%</div>
+                <div className="text-[10px] font-mono text-slate-500 mt-1.5 flex items-center gap-1">
+                  <span className="w-1.5 h-1.5 rounded-full bg-purple-400"></span> Platform baseline fee
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Admin Navigation Selector Bar */}
+          <div className="flex flex-wrap items-center justify-between gap-4 bg-white p-4 rounded-3xl border border-slate-200 shadow-3xs">
+            <div className="flex flex-wrap items-center gap-1.5 bg-slate-100 p-1.5 rounded-2xl">
+              <button
+                type="button"
+                onClick={() => setAdminActiveTab('vendors')}
+                className={`px-4 py-2 text-xs font-sans font-bold rounded-xl transition-all cursor-pointer ${
+                  adminActiveTab === 'vendors' ? 'bg-[#111827] text-white' : 'text-slate-500 hover:text-slate-800'
+                }`}
+              >
+                Registered Vendors ({allVendors.length})
+              </button>
+              <button
+                type="button"
+                onClick={() => setAdminActiveTab('subscriptions')}
+                className={`px-4 py-2 text-xs font-sans font-bold rounded-xl transition-all cursor-pointer ${
+                  adminActiveTab === 'subscriptions' ? 'bg-[#111827] text-white' : 'text-slate-500 hover:text-slate-800'
+                }`}
+              >
+                SaaS Subscriptions ({allSubscriptions.length})
+              </button>
+              <button
+                type="button"
+                onClick={() => setAdminActiveTab('purchases')}
+                className={`px-4 py-2 text-xs font-sans font-bold rounded-xl transition-all cursor-pointer ${
+                  adminActiveTab === 'purchases' ? 'bg-[#111827] text-white' : 'text-slate-500 hover:text-slate-800'
+                }`}
+              >
+                Platform Purchases logs ({allOrders.length})
+              </button>
+              <button
+                type="button"
+                onClick={() => setAdminActiveTab('settings')}
+                className={`px-4 py-2 text-xs font-sans font-bold rounded-xl transition-all cursor-pointer ${
+                  adminActiveTab === 'settings' ? 'bg-[#111827] text-white' : 'text-slate-500 hover:text-slate-800'
+                }`}
+              >
+                Platform Global Overrides
+              </button>
+            </div>
+
+            <button
+              onClick={fetchAdminData}
+              className="text-slate-700 border border-slate-200 bg-slate-50 hover:bg-slate-100 font-bold px-4 py-2.5 rounded-xl transition-all text-xs flex items-center gap-1.5 cursor-pointer font-sans"
+            >
+              <RefreshCw className="w-4 h-4 text-slate-550 animate-spin" /> Reload Registry
+            </button>
+          </div>
+
+          {/* VENDORS SECTION */}
+          {adminActiveTab === 'vendors' && (
+            <div className="bg-white rounded-3xl border border-slate-200 p-6 space-y-4">
+              <div className="flex justify-between items-center">
+                <div>
+                  <h3 className="text-sm font-black text-slate-900 font-sans uppercase tracking-wider">Registered Tenants Directory</h3>
+                  <p className="text-xs text-slate-400">Active sandbox accounts with individual memory partitions.</p>
+                </div>
+                <span className="text-[11px] font-mono bg-indigo-50 text-indigo-700 px-3 py-1 font-bold rounded-full border border-indigo-200/50">
+                  {allVendors.length} Verified Users
+                </span>
+              </div>
+
+              <div className="overflow-x-auto border border-slate-150 rounded-2xl">
+                <table className="w-full text-left border-collapse">
+                  <thead>
+                    <tr className="bg-slate-50 border-b border-slate-150 text-[10px] font-black uppercase text-slate-400">
+                      <th className="p-4 font-sans">User Profile / ID</th>
+                      <th className="p-4 font-sans">Contact Email Address</th>
+                      <th className="p-4 font-sans">HOTLINE / PIN</th>
+                      <th className="p-4 font-sans text-center">PRIVILEGE MODE</th>
+                      <th className="p-4 font-sans text-right">ACTION COMMAND</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100 text-xs">
+                    {allVendors.map((v) => (
+                      <tr key={v.id} className="hover:bg-slate-50/50">
+                        <td className="p-4">
+                          <div className="flex items-center gap-2.5">
+                            <div className="w-8 h-8 rounded-xl bg-slate-105 bg-slate-100 flex items-center justify-center font-bold text-[#111827]">
+                              {v.name.substring(0, 2).toUpperCase()}
+                            </div>
+                            <div>
+                              <div className="font-extrabold text-slate-800">{v.name}</div>
+                              <div className="text-[9.5px] text-slate-400 font-mono select-none">{v.id}</div>
+                            </div>
+                          </div>
+                        </td>
+                        <td className="p-4 font-mono font-bold text-slate-700">{v.email}</td>
+                        <td className="p-4 font-mono text-slate-500">
+                          <div>Phone: {v.phone || 'N/A Google Provider'}</div>
+                          <div className="text-[10px]">PIN: <span className="font-bold text-slate-900 uppercase">{v.pin || 'OAuth Safe'}</span></div>
+                        </td>
+                        <td className="p-4 text-center">
+                          <span className={`px-2 py-0.5 rounded font-mono font-extrabold text-[9px] uppercase tracking-wider ${
+                            v.role === 'admin' 
+                              ? 'bg-rose-50 text-rose-700 border border-rose-150' 
+                              : 'bg-emerald-50 text-emerald-800 border border-emerald-150'
+                          }`}>
+                            {v.role}
+                          </span>
+                        </td>
+                        <td className="p-4 text-right">
+                          <button
+                            type="button"
+                            onClick={async () => {
+                              if (confirm(`Are you absolutely sure you want to completely PURGE this vendor tenant account (${v.email})? This forces immediate logout and memory wipe!`)) {
+                                try {
+                                  const res = await fetch(`/api/admin/vendors/${v.email}`, { 
+                                    method: 'DELETE',
+                                    headers: { 'Authorization': `Bearer ${sessionToken}` }
+                                  });
+                                  if (res.ok) {
+                                    alert('Tenant account purged from node ledger.');
+                                    fetchAdminData();
+                                  } else {
+                                    alert('Failed to erase tenant.');
+                                  }
+                                } catch (e) {
+                                  alert('Network failed.');
+                                }
+                              }
+                            }}
+                            className="bg-rose-50 border border-rose-200 hover:bg-rose-100 text-rose-700 font-extrabold px-3 py-1.5 rounded-lg transition-all text-[11px] cursor-pointer"
+                          >
+                            Purge Tenant
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+
+          {/* SUBSCRIPTIONS SECTION */}
+          {adminActiveTab === 'subscriptions' && (
+            <div className="bg-white rounded-3xl border border-slate-200 p-6 space-y-4">
+              <div>
+                <h3 className="text-sm font-black text-slate-900 font-sans uppercase tracking-wider">Dynamic Customer Subscription Core Center</h3>
+                <p className="text-xs text-slate-405 animate-pulse">Tweak subscriber details, change billing dates, adjust recurrent amounts, and bypass payment checks.</p>
+              </div>
+
+              {allSubscriptions.length === 0 ? (
+                <div className="p-12 text-center rounded-2xl bg-slate-50 border border-slate-100">
+                  <span className="text-xs text-slate-400 font-bold block">No subscriptions reside in active platform memory.</span>
+                </div>
+              ) : (
+                <div className="overflow-x-auto border border-slate-150 rounded-2xl">
+                  <table className="w-full text-left border-collapse">
+                    <thead>
+                      <tr className="bg-slate-50 border-b border-slate-150 text-[10px] font-black uppercase text-slate-400">
+                        <th className="p-4 font-sans">Subscription ID</th>
+                        <th className="p-4 font-sans">Subscriber Detail</th>
+                        <th className="p-4 font-sans">Plan Product</th>
+                        <th className="p-4 font-sans">Cycle Amount</th>
+                        <th className="p-4 font-sans">Next Billing Date</th>
+                        <th className="p-4 font-sans">Gateway / Status</th>
+                        <th className="p-4 font-sans text-right">ADMIN Action Override</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100 text-xs text-slate-700">
+                      {allSubscriptions.map((sub) => (
+                        <tr key={sub.id} className="hover:bg-slate-50/50">
+                          <td className="p-4 font-mono font-bold text-slate-900">{sub.id}</td>
+                          <td className="p-4 font-mono text-slate-700">{sub.buyerEmail}</td>
+                          <td className="p-4">
+                            <span className="font-bold text-slate-800 block text-xs">{sub.productName}</span>
+                            <span className="text-[10px] text-slate-400 font-mono uppercase">{sub.billingInterval}</span>
+                          </td>
+                          <td className="p-4">
+                            <input
+                              type="number"
+                              defaultValue={sub.amount}
+                              onChange={async (e) => {
+                                const newAmount = e.target.value;
+                                if (!newAmount) return;
+                                await fetch(`/api/admin/subscriptions/${sub.id}`, {
+                                  method: 'PUT',
+                                  headers: { 
+                                    'Content-Type': 'application/json',
+                                    'Authorization': `Bearer ${sessionToken}`
+                                  },
+                                  body: JSON.stringify({ amount: newAmount })
+                                });
+                              }}
+                              className="w-20 border border-slate-200 rounded-lg px-2 py-1 font-mono font-bold text-slate-800"
+                            />
+                          </td>
+                          <td className="p-4">
+                            <input
+                              type="text"
+                              defaultValue={sub.nextBillingDate ? sub.nextBillingDate.substring(0, 10) : ''}
+                              onChange={async (e) => {
+                                const newDate = e.target.value;
+                                if (newDate.length < 10) return;
+                                await fetch(`/api/admin/subscriptions/${sub.id}`, {
+                                  method: 'PUT',
+                                  headers: { 
+                                    'Content-Type': 'application/json',
+                                    'Authorization': `Bearer ${sessionToken}`
+                                  },
+                                  body: JSON.stringify({ nextBillingDate: new Date(newDate).toISOString() })
+                                });
+                              }}
+                              placeholder="YYYY-MM-DD"
+                              className="w-28 border border-slate-200 rounded-lg px-2 py-1 font-mono text-xs font-bold text-slate-800"
+                            />
+                          </td>
+                          <td className="p-4">
+                            <span className={`px-2 py-0.5 rounded font-mono font-extrabold text-[9px] uppercase tracking-wider ${
+                              sub.status === 'active' 
+                                ? 'bg-emerald-50 text-emerald-800 border border-emerald-150 animate-pulse' 
+                                : 'bg-amber-50 text-amber-805 border border-amber-150'
+                            }`}>
+                              {sub.status}
+                            </span>
+                          </td>
+                          <td className="p-4 text-right space-y-1">
+                            <button
+                              type="button"
+                              onClick={async () => {
+                                const updatedStatus = sub.status === 'active' ? 'cancelled' : 'active';
+                                const res = await fetch(`/api/admin/subscriptions/${sub.id}`, {
+                                  method: 'PUT',
+                                  headers: { 
+                                    'Content-Type': 'application/json',
+                                    'Authorization': `Bearer ${sessionToken}`
+                                  },
+                                  body: JSON.stringify({ status: updatedStatus })
+                                });
+                                if (res.ok) {
+                                  fetchAdminData();
+                                }
+                              }}
+                              className="bg-[#111827] hover:bg-slate-800 text-white font-bold px-2 py-1 rounded text-[10px] cursor-pointer font-sans"
+                            >
+                              Toggle Billing
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* PURCHASES LOGS */}
+          {adminActiveTab === 'purchases' && (
+            <div className="bg-white rounded-3xl border border-slate-200 p-6 space-y-4">
+              <div>
+                <h3 className="text-sm font-black text-slate-900 font-sans uppercase tracking-wider">Consolidated Master Purchases & Order Logs</h3>
+                <p className="text-xs text-slate-400">Review overall regional transactions, adjust parameters, mark manual payments status, or erase records.</p>
+              </div>
+
+              {allOrders.length === 0 ? (
+                <div className="p-12 text-center rounded-2xl bg-slate-50 border border-slate-100">
+                  <span className="text-xs text-slate-400 font-bold block">No transaction orders logged in memory bank.</span>
+                </div>
+              ) : (
+                <div className="overflow-x-auto border border-slate-150 rounded-2xl">
+                  <table className="w-full text-left border-collapse">
+                    <thead>
+                      <tr className="bg-slate-50 border-b border-slate-150 text-[10px] font-black uppercase text-slate-400">
+                        <th className="p-4 font-sans">Order Ref / Customer</th>
+                        <th className="p-4 font-sans">Product Item Name</th>
+                        <th className="p-4 font-sans">Payment Channel</th>
+                        <th className="p-4 font-sans">Amount (USD)</th>
+                        <th className="p-4 font-sans">Current Status</th>
+                        <th className="p-4 font-sans text-right">Verification Action</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100 text-xs">
+                      {allOrders.map((ord) => (
+                        <tr key={ord.id} className="hover:bg-slate-50/50">
+                          <td className="p-4">
+                            <span className="font-mono font-bold text-slate-900 block">{ord.id}</span>
+                            <span className="text-[10px] text-slate-400 font-mono font-medium">{ord.buyerEmail}</span>
+                          </td>
+                          <td className="p-4 font-bold text-slate-800">{ord.productName}</td>
+                          <td className="p-4 font-semibold text-slate-600 font-mono text-[10px] uppercase">
+                            {ord.paymentGateway}
+                          </td>
+                          <td className="p-4">
+                            <input
+                              type="number"
+                              defaultValue={ord.amount}
+                              onChange={async (e) => {
+                                const newAmount = e.target.value;
+                                if (!newAmount) return;
+                                await fetch(`/api/admin/orders/${ord.id}`, {
+                                  method: 'PUT',
+                                  headers: { 
+                                    'Content-Type': 'application/json',
+                                    'Authorization': `Bearer ${sessionToken}`
+                                  },
+                                  body: JSON.stringify({ amount: newAmount })
+                                });
+                              }}
+                              className="w-20 border border-slate-200 rounded-lg px-2 py-1 font-mono font-bold text-slate-800"
+                            />
+                          </td>
+                          <td className="p-4">
+                            <span className={`px-2 py-0.5 rounded font-mono font-extrabold text-[9px] uppercase tracking-wider ${
+                              ord.paymentStatus === 'success' 
+                                ? 'bg-emerald-50 text-emerald-800 border border-emerald-150' 
+                                : ord.paymentStatus === 'failed' 
+                                ? 'bg-rose-50 text-rose-705 border border-rose-150'
+                                : 'bg-amber-50 text-amber-805 border border-amber-150 animate-pulse'
+                            }`}>
+                              {ord.paymentStatus}
+                            </span>
+                          </td>
+                          <td className="p-4 text-right">
+                            <div className="flex items-center justify-end gap-1.5">
+                              {ord.paymentStatus !== 'success' && (
+                                <button
+                                  type="button"
+                                  onClick={async () => {
+                                    const res = await fetch(`/api/admin/orders/${ord.id}`, {
+                                      method: 'PUT',
+                                      headers: { 
+                                        'Content-Type': 'application/json',
+                                        'Authorization': `Bearer ${sessionToken}`
+                                      },
+                                      body: JSON.stringify({ paymentStatus: 'success' })
+                                    });
+                                    if (res.ok) {
+                                      fetchAdminData();
+                                    }
+                                  }}
+                                  className="bg-emerald-500 hover:bg-emerald-600 text-white font-bold px-2 py-1 rounded text-[10px] cursor-pointer"
+                                >
+                                  Mark Success
+                                </button>
+                              )}
+                              <button
+                                type="button"
+                                onClick={async () => {
+                                  if (confirm('Erase this purchase log permanently?')) {
+                                    const res = await fetch(`/api/admin/orders/${ord.id}`, { 
+                                      method: 'DELETE',
+                                      headers: { 'Authorization': `Bearer ${sessionToken}` }
+                                    });
+                                    if (res.ok) {
+                                      fetchAdminData();
+                                    }
+                                  }
+                                }}
+                                className="bg-rose-50 hover:bg-rose-105 text-rose-700 font-bold p-1 px-2.5 rounded text-[10px] border border-rose-200 cursor-pointer"
+                              >
+                                Delete Log
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* SETTINGS SECTION */}
+          {adminActiveTab === 'settings' && (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              <div className="bg-white rounded-3xl border border-slate-200 p-6 space-y-4">
+                <div>
+                  <h3 className="text-sm font-black text-slate-900 font-sans uppercase tracking-wider">MoR Commissions Fees Engine</h3>
+                  <p className="text-xs text-slate-455">Set dynamic platform-wide take rates applied during master digital order fulfillment billing.</p>
+                </div>
+
+                <div className="space-y-4 pt-2">
+                  <div className="flex justify-between items-center text-xs">
+                    <span className="font-extrabold text-slate-800 font-sans">MoR Direct Order Baseline Take Rate:</span>
+                    <span className="font-mono bg-indigo-50 text-indigo-750 font-black px-2.5 py-1 rounded text-xs select-none border border-indigo-200">
+                      {commissionFee}% per transaction
+                    </span>
+                  </div>
+                  <input
+                    type="range"
+                    min="0.5"
+                    max="15"
+                    step="0.1"
+                    value={commissionFee}
+                    onChange={(e) => setCommissionFee(parseFloat(e.target.value))}
+                    className="w-full text-indigo-600 accent-indigo-600 cursor-col-resize h-1.5 bg-slate-100 rounded-lg appearance-none"
+                  />
+                  <div className="flex justify-between text-[10px] text-slate-400 font-bold font-sans">
+                    <span>0.5% (Low Cost)</span>
+                    <span>15.0% (High Margin Take)</span>
+                  </div>
+                </div>
+              </div>
+
+              <div className="bg-white rounded-3xl border border-slate-200 p-6 space-y-4">
+                <div>
+                  <h3 className="text-sm font-black text-slate-900 font-sans uppercase tracking-wider">Security Guard & Server Overrides</h3>
+                  <p className="text-xs text-slate-400">Simulate emergency incident response and database isolation states.</p>
+                </div>
+
+                <div className="space-y-4 pt-2">
+                  <div className="flex items-center justify-between p-3.5 bg-slate-50 rounded-2xl border border-slate-150">
+                    <div className="space-y-0.5 mr-2">
+                      <div className="text-xs font-sans font-black text-slate-800">Launch Platform Emergency Lock</div>
+                      <div className="text-[10px] text-slate-400 font-medium">Temporarily freeze all vendor checkout processes worldwide (Zimpay, MasterCard, EcoCash, direct bank screenshots).</div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setSystemMaintenance(!systemMaintenance)}
+                      className={`font-sans font-bold px-4 py-2 shrink-0 text-xs rounded-xl transition-all cursor-pointer ${
+                        systemMaintenance ? 'bg-red-650 text-white bg-red-600 animate-pulse' : 'bg-slate-200 text-slate-705 hover:bg-slate-300'
+                      }`}
+                    >
+                      {systemMaintenance ? 'SYSTEM LOCKED' : 'DISARMED'}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      ) : (
+        <>
+          {/* Merchant Header Bar */}
+          <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 bg-white p-6 rounded-3xl border border-slate-200 shadow-xs">
         <div className="flex items-center gap-3">
           <div className="bg-[#111827] text-yellow-400 p-3 rounded-2xl shadow-sm">
             <Briefcase className="w-5 h-5 animate-pulse" />
@@ -1639,301 +2475,6 @@ export default function VendorDashboard({ onSelectStore, activeStoreSubdomain }:
               </div>
             )}
           </div>
-        </div>
-      </div>
-
-      {/* REAL-TIME DEVELOPER WEBHOOK ENGINE (MERCHANT OF RECORD SYSTEM ACCENT) */}
-      <div className="bg-white rounded-3xl border border-slate-200/80 p-6 sm:p-8 space-y-8 shadow-sm mt-8 animate-fade-in" id="webhooks-engine-panel">
-        
-        {/* Panel Header */}
-        <div className="border-b border-slate-100 pb-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-          <div className="space-y-1">
-            <div className="flex items-center gap-2">
-              <div className="w-8 h-8 rounded-lg bg-indigo-50 flex items-center justify-center text-indigo-600 font-bold shrink-0">
-                <Globe className="w-4 h-4 animate-pulse" />
-              </div>
-              <h2 className="text-base font-sans font-black text-[#111827] tracking-tight uppercase">Merchant Real-Time Webhook Engine</h2>
-            </div>
-            <p className="text-xs text-slate-500 max-w-2xl leading-relaxed font-medium">
-              Register third-party URLs to listen to live events happening on the platform including checkouts, subscription cancellations, and license deactivations.
-            </p>
-          </div>
-          <button
-            onClick={() => {
-              setWhUrl('');
-              setWhEvents(['order.created']);
-              setWhStatus('active');
-              setShowNewWebhook(true);
-            }}
-            className="bg-[#111827] hover:bg-slate-800 text-yellow-400 text-xs font-sans font-extrabold px-4 py-2.5 rounded-xl inline-flex items-center gap-1.5 transition-all outline-hidden cursor-pointer shrink-0 shadow-xs"
-            id="btn-add-webhook-endpoint"
-          >
-            <Plus className="w-4 h-4" /> Add Webhook Endpoint
-          </button>
-        </div>
-
-        {/* 2-Column Core Layout */}
-        <div className="grid grid-cols-1 xl:grid-cols-3 gap-8">
-          
-          {/* LEFT: Registered Endpoints list & Deliveries Audit Journal */}
-          <div className="xl:col-span-2 space-y-8">
-            
-            {/* Registered Endpoints Section */}
-            <div className="space-y-4">
-              <h3 className="text-xs font-bold text-[#111827] uppercase tracking-wider flex items-center gap-1.5 font-sans">
-                Active Webhook Subscriptions ({webhooks.length})
-              </h3>
-              
-              {webhooks.length === 0 ? (
-                <div className="border border-dashed border-slate-200 rounded-2xl py-8 px-4 text-center text-slate-400 text-xs font-medium">
-                  No registered webhooks. Enter a local or public endpoint destination URL to sync telemetry events offline.
-                </div>
-              ) : (
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  {webhooks.map(wh => (
-                    <div key={wh.id} className="border border-slate-200 rounded-2xl p-5 bg-slate-50/50 flex flex-col justify-between gap-4 select-none relative group hover:border-slate-300 transition-all">
-                      <div className="space-y-2.5">
-                        <div className="flex items-center justify-between gap-2.5">
-                          <span className={`text-[9px] font-mono font-bold px-2 py-0.5 rounded-full border ${
-                            wh.status === 'active' 
-                              ? 'bg-emerald-50 text-emerald-700 border-emerald-110' 
-                              : 'bg-slate-100 text-slate-500 border-slate-200'
-                          }`}>
-                            {wh.status.toUpperCase()}
-                          </span>
-                          <div className="flex items-center gap-1.5 shrink-0 opacity-80 group-hover:opacity-100 transition-opacity">
-                            <button
-                              onClick={() => {
-                                setWhUrl(wh.url);
-                                setWhEvents(wh.events);
-                                setWhStatus(wh.status);
-                                setShowEditWebhook(wh);
-                              }}
-                              className="text-slate-400 hover:text-indigo-600 p-1.5 hover:bg-indigo-50 rounded-lg transition-all cursor-pointer"
-                              title="Edit Hook settings"
-                            >
-                              <Edit3 className="w-3.5 h-3.5" />
-                            </button>
-                            <button
-                              onClick={() => handleDeleteWebhookEndpoint(wh.id)}
-                              className="text-slate-400 hover:text-red-600 p-1.5 hover:bg-red-50 rounded-lg transition-all cursor-pointer"
-                              title="Delete Webhook"
-                            >
-                              <Trash2 className="w-3.5 h-3.5" />
-                            </button>
-                          </div>
-                        </div>
-
-                        <div className="space-y-1">
-                          <div className="text-xs font-mono font-bold text-slate-900 truncate" title={wh.url}>
-                            {wh.url}
-                          </div>
-                          <div className="text-[10px] text-slate-400 font-mono">
-                            secret: <code className="bg-slate-200 px-1 py-0.5 rounded font-bold text-slate-650 select-all">{wh.secret}</code>
-                          </div>
-                        </div>
-                      </div>
-
-                      <div className="border-t border-slate-205 pt-3 mt-1 space-y-1">
-                        <span className="text-[10px] font-bold text-slate-405 uppercase tracking-widest block font-sans">Subscribed Events</span>
-                        <div className="flex flex-wrap gap-1">
-                          {wh.events.map(ev => (
-                            <span key={ev} className="text-[9px] font-mono bg-indigo-50/80 text-indigo-700 font-bold px-2 py-0.5 rounded border border-indigo-100">
-                              {ev}
-                            </span>
-                          ))}
-                        </div>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-
-            {/* Deliveries Audit Logs block */}
-            <div className="space-y-4">
-              <div className="flex items-center justify-between">
-                <h3 className="text-xs font-bold text-[#111827] uppercase tracking-wider flex items-center gap-1.5 font-sans">
-                  Webhook Dispatch & Delivery Journal
-                </h3>
-                <button
-                  onClick={() => fetchWebhookData(activeStore?.id || 'store_1')}
-                  className="text-indigo-600 hover:text-indigo-800 font-mono text-[10px] font-bold flex items-center gap-1 cursor-pointer transition-all uppercase tracking-wider"
-                >
-                  <RefreshCw className="w-3 h-3" /> Refresh Journal Logs
-                </button>
-              </div>
-
-              {deliveries.length === 0 ? (
-                <div className="border border-dashed border-slate-200 rounded-2xl py-8 px-4 text-center text-slate-400 text-xs font-medium">
-                  No events dispatched yet. Complete checkouts or use the simulator tool to trigger alerts.
-                </div>
-              ) : (
-                <div className="border border-slate-200 rounded-2xl overflow-hidden bg-white shadow-xs">
-                  <div className="divide-y divide-slate-100">
-                    {deliveries.map(del => {
-                      const isExpanded = expandedDeliveryId === del.id;
-                      return (
-                        <div key={del.id} className="hover:bg-slate-50/50 transition-colors">
-                          {/* Row Core summary header */}
-                          <div 
-                            onClick={() => setExpandedDeliveryId(isExpanded ? null : del.id)}
-                            className="p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs font-medium text-slate-700 cursor-pointer select-none"
-                          >
-                            <div className="flex items-center gap-3 shrink-0">
-                              {/* Status Badge */}
-                              <span className={`px-2.5 py-1 rounded-full font-bold font-mono text-[10px] border flex items-center gap-1 shrink-0 ${
-                                del.status === 'success' 
-                                  ? 'bg-emerald-50 text-emerald-800 border-emerald-110' 
-                                  : 'bg-rose-50 text-rose-805 border-rose-110'
-                              }`}>
-                                <span className={`w-1.5 h-1.5 rounded-full ${del.status === 'success' ? 'bg-emerald-505' : 'bg-rose-500'}`}></span>
-                                {del.statusCode || 'PENDING'}
-                              </span>
-
-                              {/* Event Badge */}
-                              <span className="bg-slate-100 text-[#111827] text-[10px] font-mono font-bold px-2 py-0.5 rounded border border-slate-200">
-                                {del.event}
-                              </span>
-                            </div>
-
-                            <div className="flex-1 font-mono text-[11px] text-slate-600 truncate text-left sm:px-2">
-                              {del.url}
-                            </div>
-
-                            <div className="flex items-center gap-2 text-[10px] text-slate-405 font-mono font-semibold shrink-0">
-                              <Clock className="w-3.5 h-3.5 text-slate-300" />
-                              <span>{new Date(del.timestamp).toLocaleTimeString()}</span>
-                            </div>
-                          </div>
-
-                          {/* Expanded payload detail drawer panel */}
-                          {isExpanded && (
-                            <div className="bg-slate-50 border-t border-slate-150 p-6 space-y-5 text-xs">
-                              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                                
-                                {/* Request headers and data details */}
-                                <div className="space-y-3">
-                                  <div className="flex items-center justify-between">
-                                    <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest font-mono">Simulated Request Payload Body</span>
-                                    <span className="text-[9px] font-mono bg-slate-200 px-2 py-0.5 rounded text-slate-650 font-bold">X-MoR-Event: {del.event}</span>
-                                  </div>
-                                  <div className="bg-[#111827] text-indigo-200 p-4 rounded-xl border border-slate-800 text-[10px] font-mono overflow-x-auto max-h-[220px] shadow-inner leading-relaxed">
-                                    <pre className="whitespace-pre-wrap">{JSON.stringify(del.payload, null, 2)}</pre>
-                                  </div>
-                                </div>
-
-                                {/* Response details */}
-                                <div className="space-y-3">
-                                  <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest font-mono">Mock HTTP Status Response</span>
-                                  <div className="bg-slate-900 text-slate-300 p-4 rounded-xl border border-slate-800 text-[10px] font-mono overflow-auto max-h-[220px] shadow-inner leading-relaxed">
-                                    <div>
-                                      <span className="text-yellow-400 font-bold">Status:</span> {del.statusCode} {del.status === 'success' ? 'OK' : 'Error'}
-                                    </div>
-                                    <div className="border-t border-slate-800 my-2 pt-2">
-                                      <span className="text-slate-405 font-bold">Headers:</span>
-                                      <pre className="text-slate-500 mt-1">
-                                        Content-Type: text/plain; charset=UTF-32{"\n"}
-                                        Connection: keep-alive{"\n"}
-                                        X-Simulated-Delivery: true
-                                      </pre>
-                                    </div>
-                                    <div className="border-t border-slate-800 my-2 pt-2">
-                                      <span className="text-slate-405 font-bold">Raw Response payload:</span>
-                                      <pre className="text-emerald-400 mt-1 whitespace-pre-wrap">{del.responseBody || '(Empty response body)'}</pre>
-                                    </div>
-                                  </div>
-                                </div>
-
-                              </div>
-                            </div>
-                          )}
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-              )}
-            </div>
-
-          </div>
-
-          {/* RIGHT: Active Webhook testing sandbox simulator */}
-          <div className="xl:col-span-1 border border-slate-200 rounded-3xl p-6 bg-slate-50/40 space-y-5 relative">
-            
-            <div className="space-y-1">
-              <h3 className="text-xs font-bold text-[#111827] uppercase tracking-wider flex items-center gap-1.5 font-sans">
-                <Send className="w-3.5 h-3.5 text-indigo-501" /> Developer Sandbox Test
-              </h3>
-              <p className="text-[11px] text-slate-505 leading-relaxed font-semibold">
-                Manually fire live POST webhooks with customized mock JSON data to verify your receiver script structures.
-              </p>
-            </div>
-
-            <form onSubmit={handleSimulateWebhook} className="space-y-4">
-              <div>
-                <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1.5 font-sans">1. Select Event Type</label>
-                <select
-                  value={simulatorEvent}
-                  onChange={(e) => setSimulatorEvent(e.target.value)}
-                  className="w-full bg-white border border-slate-200 rounded-xl p-3 text-xs focus:ring-1 focus:ring-indigo-550 focus:outline-hidden"
-                  id="simulator-event-select"
-                >
-                  <option value="order.created">order.created (Approved Checkouts)</option>
-                  <option value="subscription.updated">subscription.updated (SaaS update/cancel)</option>
-                  <option value="payment.failed">payment.failed (Simulated Checkout Decline)</option>
-                  <option value="license.revoked">license.revoked (Deactivation trigger)</option>
-                </select>
-              </div>
-
-              <div>
-                <div className="flex items-center justify-between mb-1.5 font-sans">
-                  <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider">2. Edit JSON Payload Body</label>
-                  <span className="text-[10px] font-bold text-indigo-650 flex items-center gap-0.5"><Code className="w-3 h-3" /> JSON</span>
-                </div>
-                <textarea
-                  rows={9}
-                  value={simulatorPayload}
-                  onChange={(e) => setSimulatorPayload(e.target.value)}
-                  className="w-full bg-[#111827] text-indigo-200 border border-slate-800 rounded-xl p-3 text-xs focus:outline-hidden focus:border-indigo-505 font-mono leading-relaxed"
-                  placeholder="Paste custom body schema here..."
-                  id="simulator-payload-area font-mono"
-                />
-              </div>
-
-              <button
-                type="submit"
-                disabled={webhookLoading || webhooks.length === 0}
-                className={`w-full font-sans font-black text-xs py-3.5 rounded-xl transition-all inline-flex items-center justify-center gap-1.5 cursor-pointer shadow-xs ${
-                  webhooks.length === 0 
-                  ? 'bg-slate-250 text-slate-400 cursor-not-allowed border border-slate-300'
-                  : 'bg-indigo-600 hover:bg-indigo-700 text-white active:scale-[0.98]'
-                }`}
-                id="btn-simulate-webhook-post"
-              >
-                {webhookLoading ? (
-                  <>
-                    <RefreshCw className="w-4 h-4 animate-spin text-white" />
-                    <span>Routing Request...</span>
-                  </>
-                ) : (
-                  <>
-                    <Send className="w-4 h-4 text-white" />
-                    <span>Dispatch Simulated Hook</span>
-                  </>
-                )}
-              </button>
-            </form>
-
-            {webhooks.length === 0 && (
-              <div className="p-3 bg-yellow-50 text-yellow-805 border border-yellow-200 rounded-xl text-[11px] leading-relaxed flex items-start gap-1.5">
-                <AlertCircle className="w-4 h-4 shrink-0 mt-0.5 text-yellow-600 animate-bounce" />
-                <p className="font-medium">Register at least 1 destination Webhook Endpoint to run sample dispatches.</p>
-              </div>
-            )}
-
-          </div>
-
         </div>
 
       </div>
@@ -2697,6 +3238,8 @@ export default function VendorDashboard({ onSelectStore, activeStoreSubdomain }:
             </form>
           </div>
         </div>
+      )}
+      </>
       )}
     </div>
   );
